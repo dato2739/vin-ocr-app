@@ -1,74 +1,406 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>VIN OCR & Decoder</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>VIN OCR Pro</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js"></script>
 <style>
-body { font-family: Arial; padding:20px; background:#f5f5f5;}
-.box { background:white; padding:20px; border-radius:10px; margin-bottom:20px;}
-img { max-width:100%; border-radius:10px;}
-button { padding:10px; margin-top:10px;}
+  :root { --bg:#f5f7fb; --card:#fff; --text:#18212f; --muted:#5f6b7a; --line:#d9e0ea; --accent:#111827; --soft:#eef2f7; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:Arial,Helvetica,sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width:1200px; margin:0 auto; padding:24px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:22px; padding:20px; }
+  h1,h2,h3 { margin:0 0 12px; }
+  .muted { color:var(--muted); }
+  .controls { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 10px; }
+  button, .fileLabel {
+    border:none; border-radius:14px; padding:12px 16px; background:var(--accent); color:white; cursor:pointer; font-size:16px;
+  }
+  button.secondary { background:#dde4ee; color:#223; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  input[type=file] { display:none; }
+  input[type=text] {
+    width:100%; padding:14px 16px; border-radius:14px; border:1px solid var(--line); font-size:18px;
+  }
+  .canvasWrap { position:relative; width:100%; background:#f0f3f8; border:1px dashed #cfd8e3; border-radius:18px; overflow:hidden; min-height:320px; display:flex; align-items:center; justify-content:center; }
+  canvas, img.preview { max-width:100%; max-height:420px; display:block; }
+  #selectionCanvas { position:absolute; inset:0; cursor:crosshair; }
+  .pill { display:inline-block; padding:8px 12px; border-radius:999px; background:var(--soft); margin:0 8px 8px 0; cursor:pointer; border:1px solid var(--line); }
+  textarea { width:100%; min-height:180px; border-radius:14px; border:1px solid var(--line); padding:12px; font-family:monospace; font-size:14px; }
+  .status { margin-top:12px; padding:12px 14px; background:#f7f0f0; color:#a03a2f; border-radius:14px; }
+  .ok { background:#edf8ef; color:#1f6a37; }
+  .small { font-size:13px; }
+  .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .label { font-size:14px; color:var(--muted); margin-bottom:6px; }
+  .kv { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .box { background:#f8fafc; border:1px solid var(--line); border-radius:14px; padding:12px; }
+  @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
+<div class="wrap">
+  <h1>VIN OCR Pro</h1>
+  <div class="muted">Upload image, auto-enhance, try multiple OCR passes, and crop the VIN zone manually if needed.</div>
 
-<div class="box">
-<h2>Upload VIN Image</h2>
-<input type="file" id="file">
-<br>
-<button onclick="process()">Recognize VIN</button>
-</div>
+  <div class="grid" style="margin-top:18px;">
+    <div class="card">
+      <h2>1. Upload & Tools</h2>
+      <label class="fileLabel">
+        Choose image
+        <input id="fileInput" type="file" accept="image/*" />
+      </label>
+      <div class="controls">
+        <button id="autoBtn" disabled>Recognize VIN</button>
+        <button id="cropBtn" class="secondary" disabled>Use selected crop</button>
+        <button id="resetBtn" class="secondary">Reset</button>
+      </div>
+      <div class="small muted">Tip: If auto-recognition misses the VIN, drag a box over the VIN area in the image and press <b>Use selected crop</b>.</div>
+      <div id="status" class="status" style="display:none;"></div>
+    </div>
 
-<div class="box">
-<h3>Preview</h3>
-<img id="preview"/>
-</div>
+    <div class="card">
+      <h2>2. Image / Select VIN Zone</h2>
+      <div class="canvasWrap">
+        <img id="basePreview" class="preview" style="display:none;" />
+        <canvas id="selectionCanvas"></canvas>
+        <div id="placeholder" class="muted">Image preview will appear here</div>
+      </div>
+    </div>
 
-<div class="box">
-<h3>Result</h3>
-<input id="vin" style="width:300px;" placeholder="VIN will appear here"/>
+    <div class="card">
+      <h2>3. OCR Text</h2>
+      <textarea id="ocrText" placeholder="Recognized text will appear here"></textarea>
+    </div>
+
+    <div class="card">
+      <h2>4. VIN Result</h2>
+      <div class="label">Selected VIN</div>
+      <input id="vinInput" type="text" placeholder="VIN will appear here" />
+      <div class="controls">
+        <button id="copyBtn" class="secondary">Copy</button>
+        <button id="decodeBtn" class="secondary">Decode VIN</button>
+      </div>
+      <div class="label">Candidates</div>
+      <div id="candidates"></div>
+      <div id="decode" class="kv" style="margin-top:12px;"></div>
+    </div>
+  </div>
 </div>
 
 <script>
-function enhance(canvas, ctx){
-  let imgData = ctx.getImageData(0,0,canvas.width,canvas.height);
-  let d = imgData.data;
+const fileInput = document.getElementById('fileInput');
+const autoBtn = document.getElementById('autoBtn');
+const cropBtn = document.getElementById('cropBtn');
+const resetBtn = document.getElementById('resetBtn');
+const copyBtn = document.getElementById('copyBtn');
+const decodeBtn = document.getElementById('decodeBtn');
+const vinInput = document.getElementById('vinInput');
+const ocrText = document.getElementById('ocrText');
+const candidatesDiv = document.getElementById('candidates');
+const decodeDiv = document.getElementById('decode');
+const statusDiv = document.getElementById('status');
+const preview = document.getElementById('basePreview');
+const selectionCanvas = document.getElementById('selectionCanvas');
+const placeholder = document.getElementById('placeholder');
+const sctx = selectionCanvas.getContext('2d');
+
+let originalImage = null;
+let imageUrl = '';
+let displayRect = null;
+let drag = null;
+let selection = null;
+
+function setStatus(msg, ok=false) {
+  statusDiv.style.display = 'block';
+  statusDiv.className = 'status' + (ok ? ' ok' : '');
+  statusDiv.textContent = msg;
+}
+function clearStatus(){ statusDiv.style.display = 'none'; }
+
+function normalize(text){
+  return (text || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g,'')
+    .replace(/O/g,'0')
+    .replace(/I/g,'1')
+    .replace(/Q/g,'0');
+}
+function vinCandidatesFromText(text){
+  const raw = normalize(text);
+  const out = new Set();
+  for(let i=0;i<=raw.length-17;i++){
+    const s = raw.slice(i,i+17);
+    if(/^[A-HJ-NPR-Z0-9]{17}$/.test(s)) out.add(s);
+  }
+  return Array.from(out);
+}
+function showCandidates(list){
+  candidatesDiv.innerHTML = '';
+  if(!list.length){
+    candidatesDiv.innerHTML = '<span class="muted">No candidates yet</span>';
+    return;
+  }
+  list.forEach(v=>{
+    const el = document.createElement('span');
+    el.className = 'pill';
+    el.textContent = v;
+    el.onclick = ()=> { vinInput.value = v; };
+    candidatesDiv.appendChild(el);
+  });
+}
+function drawSelection(){
+  selectionCanvas.width = preview.clientWidth || 640;
+  selectionCanvas.height = preview.clientHeight || 360;
+  sctx.clearRect(0,0,selectionCanvas.width, selectionCanvas.height);
+  if(selection){
+    sctx.strokeStyle = '#00b3ff';
+    sctx.lineWidth = 2;
+    sctx.setLineDash([6,4]);
+    sctx.strokeRect(selection.x, selection.y, selection.w, selection.h);
+    sctx.setLineDash([]);
+  }
+}
+function fitCanvasToImage(){
+  if(!originalImage) return;
+  placeholder.style.display = 'none';
+  preview.style.display = 'block';
+  preview.src = imageUrl;
+  requestAnimationFrame(drawSelection);
+}
+function getImageFromFile(file){
+  return new Promise((resolve,reject)=>{
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = ()=> resolve({img, url});
+    img.onerror = reject;
+    img.src = url;
+  });
+}
+function makeCanvas(w,h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+function grayscaleThreshold(ctx, w, h, contrast=1.5, bright=1.05, low=80, high=150){
+  let img = ctx.getImageData(0,0,w,h);
+  let d = img.data;
   for(let i=0;i<d.length;i+=4){
-    let avg=(d[i]+d[i+1]+d[i+2])/3;
-    let val = avg>140?255:avg<80?0:avg;
-    d[i]=d[i+1]=d[i+2]=val;
+    let avg = (d[i]+d[i+1]+d[i+2])/3;
+    avg = ((avg - 128) * contrast + 128) * bright;
+    let v = avg > high ? 255 : avg < low ? 0 : avg;
+    d[i]=d[i+1]=d[i+2]=Math.max(0,Math.min(255,v));
   }
-  ctx.putImageData(imgData,0,0);
+  ctx.putImageData(img,0,0);
 }
+function buildVariant(srcCanvas, mode){
+  const c = makeCanvas(srcCanvas.width, srcCanvas.height);
+  const ctx = c.getContext('2d');
+  ctx.drawImage(srcCanvas,0,0);
+  if(mode === 'soft') grayscaleThreshold(ctx,c.width,c.height,1.4,1.05,70,165);
+  if(mode === 'hard') grayscaleThreshold(ctx,c.width,c.height,1.8,1.12,90,145);
+  if(mode === 'mid') grayscaleThreshold(ctx,c.width,c.height,1.6,1.08,80,155);
+  return c;
+}
+function rotateCanvas(srcCanvas, angleDeg){
+  const rad = angleDeg * Math.PI / 180;
+  const sin = Math.abs(Math.sin(rad)), cos = Math.abs(Math.cos(rad));
+  const nw = Math.ceil(srcCanvas.width * cos + srcCanvas.height * sin);
+  const nh = Math.ceil(srcCanvas.width * sin + srcCanvas.height * cos);
+  const c = makeCanvas(nw, nh);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0,0,nw,nh);
+  ctx.translate(nw/2, nh/2);
+  ctx.rotate(rad);
+  ctx.drawImage(srcCanvas, -srcCanvas.width/2, -srcCanvas.height/2);
+  return c;
+}
+async function runOCR(canvas){
+  const { data } = await Tesseract.recognize(canvas.toDataURL('image/png'), 'eng', {
+    logger: ()=>{}
+  });
+  return data.text || '';
+}
+async function tryMany(canvas){
+  const attempts = [];
+  const baseVariants = [
+    {name:'soft', c: buildVariant(canvas,'soft')},
+    {name:'mid', c: buildVariant(canvas,'mid')},
+    {name:'hard', c: buildVariant(canvas,'hard')}
+  ];
+  const angles = [0, -8, 8, -15, 15];
+  for(const v of baseVariants){
+    for(const a of angles){
+      attempts.push({name:`${v.name} ${a}`, c: a === 0 ? v.c : rotateCanvas(v.c, a)});
+    }
+  }
 
-async function process(){
-  const file = document.getElementById('file').files[0];
+  let allText = '';
+  let best = [];
+  for(let i=0;i<attempts.length;i++){
+    setStatus(`Trying OCR variant ${i+1} / ${attempts.length} ...`);
+    const text = await runOCR(attempts[i].c);
+    allText += `\n[${attempts[i].name}]\n${text}\n`;
+    const cands = vinCandidatesFromText(text);
+    if(cands.length && cands[0]){
+      best = [...new Set([...best, ...cands])];
+      if(best.length) {
+        return { text: allText.trim(), candidates: best, bestCanvas: attempts[i].c };
+      }
+    }
+  }
+  return { text: allText.trim(), candidates: best, bestCanvas: attempts[0].c };
+}
+function imageToBaseCanvas(img){
+  const scale = Math.max(2, 1800 / Math.max(img.width, img.height));
+  const c = makeCanvas(Math.round(img.width*scale), Math.round(img.height*scale));
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0,0,c.width,c.height);
+  ctx.drawImage(img,0,0,c.width,c.height);
+  return c;
+}
+function getCropCanvas(){
+  if(!originalImage || !selection) return null;
+  const pw = preview.clientWidth, ph = preview.clientHeight;
+  const rx = originalImage.width / pw;
+  const ry = originalImage.height / ph;
+  const sx = Math.max(0, Math.round(selection.x * rx));
+  const sy = Math.max(0, Math.round(selection.y * ry));
+  const sw = Math.max(10, Math.round(selection.w * rx));
+  const sh = Math.max(10, Math.round(selection.h * ry));
+
+  const c = makeCanvas(sw*3, sh*3);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0,0,c.width,c.height);
+  ctx.drawImage(originalImage, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  return c;
+}
+async function handleAuto(canvas){
+  clearStatus();
+  ocrText.value = '';
+  decodeDiv.innerHTML = '';
+  setStatus('Running OCR...');
+  const result = await tryMany(canvas);
+  ocrText.value = result.text;
+  showCandidates(result.candidates);
+  if(result.candidates.length){
+    vinInput.value = result.candidates[0];
+    setStatus('VIN candidate found.', true);
+  } else {
+    setStatus('No VIN found automatically. Select only the VIN zone with the mouse and press "Use selected crop".');
+  }
+}
+selectionCanvas.addEventListener('mousedown', e=>{
+  if(!originalImage) return;
+  const r = selectionCanvas.getBoundingClientRect();
+  drag = { x:e.clientX-r.left, y:e.clientY-r.top };
+  selection = { x:drag.x, y:drag.y, w:0, h:0 };
+  drawSelection();
+});
+selectionCanvas.addEventListener('mousemove', e=>{
+  if(!drag) return;
+  const r = selectionCanvas.getBoundingClientRect();
+  const x = e.clientX-r.left, y = e.clientY-r.top;
+  selection = {
+    x: Math.min(drag.x,x),
+    y: Math.min(drag.y,y),
+    w: Math.abs(x-drag.x),
+    h: Math.abs(y-drag.y)
+  };
+  drawSelection();
+});
+window.addEventListener('mouseup', ()=> { drag = null; });
+
+fileInput.addEventListener('change', async (e)=>{
+  const file = e.target.files[0];
   if(!file) return;
-
-  const img = new Image();
-  img.src = URL.createObjectURL(file);
-
-  img.onload = async ()=>{
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    canvas.width = img.width*2;
-    canvas.height = img.height*2;
-    ctx.drawImage(img,0,0,canvas.width,canvas.height);
-
-    enhance(canvas, ctx);
-
-    document.getElementById("preview").src = canvas.toDataURL();
-
-    const { data } = await Tesseract.recognize(canvas.toDataURL(),"eng");
-
-    let text = data.text.toUpperCase().replace(/[^A-Z0-9]/g,"");
-    let vin = text.match(/[A-HJ-NPR-Z0-9]{17}/);
-
-    document.getElementById("vin").value = vin ? vin[0] : "NOT FOUND";
+  const obj = await getImageFromFile(file);
+  originalImage = obj.img;
+  if(imageUrl) URL.revokeObjectURL(imageUrl);
+  imageUrl = obj.url;
+  selection = null;
+  autoBtn.disabled = false;
+  cropBtn.disabled = false;
+  fitCanvasToImage();
+  ocrText.value = '';
+  vinInput.value = '';
+  decodeDiv.innerHTML = '';
+  showCandidates([]);
+  clearStatus();
+});
+autoBtn.addEventListener('click', async ()=>{
+  if(!originalImage) return;
+  const base = imageToBaseCanvas(originalImage);
+  await handleAuto(base);
+});
+cropBtn.addEventListener('click', async ()=>{
+  if(!selection) {
+    setStatus('First drag a box around the VIN area.');
+    return;
   }
-}
+  const crop = getCropCanvas();
+  if(!crop) return;
+  preview.src = crop.toDataURL('image/png');
+  selection = null;
+  drawSelection();
+  await handleAuto(crop);
+});
+resetBtn.addEventListener('click', ()=>{
+  fileInput.value = '';
+  originalImage = null;
+  if(imageUrl) URL.revokeObjectURL(imageUrl);
+  imageUrl = '';
+  preview.style.display = 'none';
+  placeholder.style.display = 'block';
+  autoBtn.disabled = true;
+  cropBtn.disabled = true;
+  ocrText.value = '';
+  vinInput.value = '';
+  candidatesDiv.innerHTML = '';
+  decodeDiv.innerHTML = '';
+  selection = null;
+  drawSelection();
+  clearStatus();
+});
+copyBtn.addEventListener('click', async ()=>{
+  if(vinInput.value) await navigator.clipboard.writeText(vinInput.value);
+});
+decodeBtn.addEventListener('click', async ()=>{
+  const vin = vinInput.value.trim().toUpperCase();
+  if(!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) {
+    setStatus('Enter a valid 17-character VIN first.');
+    return;
+  }
+  setStatus('Decoding VIN...');
+  decodeDiv.innerHTML = '';
+  try{
+    const res = await fetch(`https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVin/${vin}?format=json`);
+    const data = await res.json();
+    const rows = Array.isArray(data.Results) ? data.Results : [];
+    const pick = label => (rows.find(r => r.Variable === label) || {}).Value || '—';
+    const fields = {
+      Make: pick('Make'),
+      Model: pick('Model'),
+      Year: pick('Model Year'),
+      'Body Class': pick('Body Class'),
+      'Vehicle Type': pick('Vehicle Type'),
+      'Drive Type': pick('Drive Type'),
+      Fuel: pick('Fuel Type - Primary'),
+      Engine: [pick('Engine Number of Cylinders'), pick('Displacement (L)') ? pick('Displacement (L)') + 'L' : ''].filter(Boolean).join(' / ') || '—',
+      Plant: [pick('Plant Country'), pick('Plant City')].filter(Boolean).join(', ') || '—',
+      Manufacturer: pick('Manufacturer Name')
+    };
+    decodeDiv.innerHTML = Object.entries(fields).map(([k,v]) => `<div class="box"><div class="small muted">${k}</div><div>${v || '—'}</div></div>`).join('');
+    setStatus('VIN decoded.', true);
+  } catch(e){
+    setStatus('Decode failed.');
+  }
+});
+showCandidates([]);
 </script>
-
 </body>
 </html>
